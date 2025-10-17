@@ -1,7 +1,8 @@
+// components/StudentAverages.js
 import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
-import { View, StyleSheet, ScrollView, Text, FlatList, Dimensions } from 'react-native';
-import { Card, Chip, ProgressBar } from 'react-native-paper';
-import { getStudents, getClasses, getCurrentClass } from '../utils/storage';
+import { View, StyleSheet, ScrollView, Text, FlatList, Dimensions, RefreshControl } from 'react-native';
+import { Card, Chip, ProgressBar, Button } from 'react-native-paper';
+import { getStudents, getClasses, getCurrentClass, StorageService } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 375;
@@ -20,6 +21,12 @@ const StudentCard = memo(({ student, selectedClassId }) => {
     return 'Reprovado';
   };
 
+  const getStatusIcon = (average) => {
+    if (average >= 7) return 'check-circle';
+    if (average >= 5) return 'alert-circle';
+    return 'close-circle';
+  };
+
   return (
     <Card style={styles.studentCard}>
       <Card.Content style={styles.studentCardContent}>
@@ -34,6 +41,7 @@ const StudentCard = memo(({ student, selectedClassId }) => {
               fontSize: isSmallScreen ? 11 : 12
             }}
             style={[styles.statusChip, { borderColor: getStatusColor(student.average) }]}
+            icon={getStatusIcon(student.average)}
           >
             {getStatusText(student.average)}
           </Chip>
@@ -41,13 +49,13 @@ const StudentCard = memo(({ student, selectedClassId }) => {
 
         {!selectedClassId && (
           <Text style={styles.className} numberOfLines={1}>
-            Turma: {student.className}
+            🏫 Turma: {student.className}
           </Text>
         )}
 
         <View style={styles.averageSection}>
           <Text style={styles.averageText}>
-            Média: {student.average}
+            📊 Média: {student.average}
           </Text>
           <ProgressBar 
             progress={student.average / 10} 
@@ -57,11 +65,11 @@ const StudentCard = memo(({ student, selectedClassId }) => {
         </View>
 
         <View style={styles.notesSection}>
-          <Text style={styles.notesTitle} numberOfLines={1}>
-            Notas: {student.notes.join(' | ')}
+          <Text style={styles.notesTitle} numberOfLines={2}>
+            📝 Notas: {student.notes.join(' | ')}
           </Text>
           <Text style={styles.dateText}>
-            Atualizado em: {student.date}
+            📅 Atualizado em: {student.date}
           </Text>
         </View>
       </Card.Content>
@@ -79,38 +87,149 @@ const ClassChip = memo(({ classItem, isSelected, onPress }) => (
     ]}
     mode="outlined"
     textStyle={{ fontSize: isSmallScreen ? 12 : 13 }}
+    icon={isSelected ? 'check-circle' : 'circle-outline'}
   >
     {classItem.name}
   </Chip>
 ));
+
+const StatisticsCard = memo(({ statistics, selectedClass }) => (
+  <Card style={styles.statsCard}>
+    <Card.Content>
+      <Text style={styles.statsTitle}>
+        {selectedClass ? `📈 Estatísticas - ${selectedClass.name}` : '📈 Estatísticas Gerais'}
+      </Text>
+      
+      <View style={styles.statsGrid}>
+        <View style={styles.statItem}>
+          <Text style={styles.statNumber}>{statistics.totalStudents}</Text>
+          <Text style={styles.statLabel}>Total de Alunos</Text>
+        </View>
+        
+        <View style={styles.statItem}>
+          <Text style={styles.statNumber}>{statistics.average}</Text>
+          <Text style={styles.statLabel}>Média Geral</Text>
+        </View>
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, styles.statApproved]}>{statistics.approved}</Text>
+          <Text style={styles.statLabel}>Aprovados</Text>
+        </View>
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, styles.statRecovery]}>{statistics.recovery}</Text>
+          <Text style={styles.statLabel}>Recuperação</Text>
+        </View>
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, styles.statFailed]}>{statistics.failed}</Text>
+          <Text style={styles.statLabel}>Reprovados</Text>
+        </View>
+        
+        <View style={styles.statItem}>
+          <Text style={[styles.statNumber, styles.statRate]}>{statistics.approvalRate}%</Text>
+          <Text style={styles.statLabel}>Taxa de Aprovação</Text>
+        </View>
+      </View>
+
+      <ProgressBar 
+        progress={statistics.approvalRate / 100} 
+        color={getApprovalRateColor(statistics.approvalRate)}
+        style={styles.approvalProgress}
+      />
+    </Card.Content>
+  </Card>
+));
+
+// Função auxiliar para cor da taxa de aprovação
+const getApprovalRateColor = (rate) => {
+  if (rate >= 80) return '#4caf50';
+  if (rate >= 60) return '#ff9800';
+  return '#f44336';
+};
 
 function StudentAverages({ navigation }) {
   const [students, setStudents] = useState([]);
   const [classes, setClasses] = useState([]);
   const [currentClassId, setCurrentClassId] = useState('');
   const [selectedClassId, setSelectedClassId] = useState('');
+  const [statistics, setStatistics] = useState({
+    totalStudents: 0,
+    average: 0,
+    approved: 0,
+    recovery: 0,
+    failed: 0,
+    approvalRate: 0
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Callbacks memoizados
   const loadStudents = useCallback(async () => {
-    const loadedStudents = await getStudents();
-    setStudents(loadedStudents);
+    try {
+      const loadedStudents = await getStudents();
+      setStudents(loadedStudents);
+    } catch (error) {
+      console.error('Erro ao carregar alunos:', error);
+    }
   }, []);
 
   const loadClasses = useCallback(async () => {
-    const loadedClasses = await getClasses();
-    setClasses(loadedClasses);
+    try {
+      const loadedClasses = await getClasses();
+      setClasses(loadedClasses);
+    } catch (error) {
+      console.error('Erro ao carregar turmas:', error);
+    }
   }, []);
 
   const loadCurrentClass = useCallback(async () => {
-    const currentClass = await getCurrentClass();
-    setCurrentClassId(currentClass || '');
-    setSelectedClassId(currentClass || '');
+    try {
+      const currentClass = await getCurrentClass();
+      setCurrentClassId(currentClass || '');
+      setSelectedClassId(currentClass || '');
+    } catch (error) {
+      console.error('Erro ao carregar turma atual:', error);
+      setCurrentClassId('');
+      setSelectedClassId('');
+    }
   }, []);
 
   const calculateClassAverage = useCallback((classStudents) => {
     if (classStudents.length === 0) return 0;
     const total = classStudents.reduce((sum, student) => sum + student.average, 0);
     return (total / classStudents.length).toFixed(2);
+  }, []);
+
+  const calculateStatistics = useCallback((classStudents) => {
+    if (classStudents.length === 0) {
+      return {
+        totalStudents: 0,
+        average: 0,
+        approved: 0,
+        recovery: 0,
+        failed: 0,
+        approvalRate: 0
+      };
+    }
+    
+    const totalStudents = classStudents.length;
+    const totalAverage = classStudents.reduce((sum, student) => sum + student.average, 0) / totalStudents;
+    
+    const approved = classStudents.filter(student => student.average >= 7).length;
+    const recovery = classStudents.filter(student => student.average >= 5 && student.average < 7).length;
+    const failed = classStudents.filter(student => student.average < 5).length;
+    
+    const approvalRate = (approved / totalStudents) * 100;
+    
+    return {
+      totalStudents,
+      average: parseFloat(totalAverage.toFixed(2)),
+      approved,
+      recovery,
+      failed,
+      approvalRate: parseFloat(approvalRate.toFixed(1))
+    };
   }, []);
 
   const getClassStudents = useCallback(() => {
@@ -120,10 +239,27 @@ function StudentAverages({ navigation }) {
     return students;
   }, [students, selectedClassId]);
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadStudents(), loadClasses()]);
+    } catch (error) {
+      console.error('Erro ao atualizar:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadStudents, loadClasses]);
+
   // Efeitos otimizados
   useEffect(() => {
     const loadData = async () => {
-      await Promise.all([loadStudents(), loadClasses(), loadCurrentClass()]);
+      try {
+        await Promise.all([loadStudents(), loadClasses(), loadCurrentClass()]);
+      } catch (error) {
+        console.error('Erro ao carregar dados:', error);
+      } finally {
+        setIsLoading(false);
+      }
     };
     loadData();
   }, [loadStudents, loadClasses, loadCurrentClass]);
@@ -138,9 +274,15 @@ function StudentAverages({ navigation }) {
     return unsubscribe;
   }, [navigation, loadStudents, loadClasses, loadCurrentClass]);
 
+  // Atualizar estatísticas quando alunos ou turma selecionada mudar
+  useEffect(() => {
+    const classStudents = getClassStudents();
+    const newStatistics = calculateStatistics(classStudents);
+    setStatistics(newStatistics);
+  }, [students, selectedClassId, getClassStudents, calculateStatistics]);
+
   // Dados memoizados para performance
   const classStudents = useMemo(() => getClassStudents(), [getClassStudents]);
-  const classAverage = useMemo(() => calculateClassAverage(classStudents), [classStudents, calculateClassAverage]);
   const selectedClass = useMemo(() => classes.find(cls => cls.id === selectedClassId), [classes, selectedClassId]);
 
   const renderStudentItem = useCallback(({ item }) => (
@@ -162,65 +304,111 @@ function StudentAverages({ navigation }) {
 
   const classKeyExtractor = useCallback((item) => item.id, []);
 
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <Card style={styles.loadingCard}>
+          <Card.Content>
+            <Text style={styles.loadingText}>Carregando médias...</Text>
+          </Card.Content>
+        </Card>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Card style={styles.summaryCard}>
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#1976d2']}
+            tintColor="#1976d2"
+          />
+        }
+      >
+        {/* Cartão de Estatísticas */}
+        <StatisticsCard statistics={statistics} selectedClass={selectedClass} />
+
+        {/* Seletor de Turmas */}
+        <Card style={styles.selectorCard}>
           <Card.Content>
-            <Text style={styles.summaryTitle}>
-              {selectedClass ? `Turma: ${selectedClass.name}` : 'Todas as Turmas'}
+            <Text style={styles.selectorTitle}>
+              🏫 Selecionar Turma
             </Text>
             
             {classes.length > 0 && (
-              <View style={styles.classSelection}>
-                <FlatList
-                  data={[{ id: '', name: 'Todas as Turmas' }, ...classes]}
-                  keyExtractor={classKeyExtractor}
-                  renderItem={renderClassChip}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.classChipsContainer}
-                  initialNumToRender={5}
-                  maxToRenderPerBatch={3}
-                  windowSize={3}
-                />
-              </View>
+              <FlatList
+                data={[{ id: '', name: 'Todas as Turmas' }, ...classes]}
+                keyExtractor={classKeyExtractor}
+                renderItem={renderClassChip}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.classChipsContainer}
+                initialNumToRender={5}
+                maxToRenderPerBatch={3}
+                windowSize={3}
+              />
             )}
 
-            <View style={styles.summaryStats}>
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>
-                  {classStudents.length}
-                </Text>
-                <Text style={styles.statLabel}>
-                  Total de Alunos
-                </Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>
-                  {classAverage}
-                </Text>
-                <Text style={styles.statLabel}>
-                  Média da Turma
-                </Text>
-              </View>
-            </View>
+            {selectedClass && (
+              <Text style={styles.selectedClassInfo}>
+                ✅ Visualizando: <Text style={styles.selectedClassName}>{selectedClass.name}</Text>
+                {selectedClass.subject && ` - ${selectedClass.subject}`}
+              </Text>
+            )}
+
+            <Button 
+              mode="outlined" 
+              onPress={() => navigation.navigate('ChartsScreen')}
+              style={styles.chartsButton}
+              icon="chart-bar"
+              contentStyle={styles.buttonContent}
+            >
+              Ver Gráficos Detalhados
+            </Button>
           </Card.Content>
         </Card>
 
+        {/* Lista de Alunos */}
         <Card style={styles.listCard}>
           <Card.Content>
-            <Text style={styles.listTitle}>
-              Médias Individuais
-            </Text>
+            <View style={styles.listHeader}>
+              <Text style={styles.listTitle}>
+                👥 Médias dos Alunos
+              </Text>
+              <Text style={styles.listCount}>
+                {classStudents.length} {classStudents.length === 1 ? 'aluno' : 'alunos'}
+              </Text>
+            </View>
 
             {classStudents.length === 0 ? (
-              <Text style={styles.emptyText}>
-                {selectedClass 
-                  ? `Nenhum aluno cadastrado na turma ${selectedClass?.name}.`
-                  : 'Nenhum aluno cadastrado. Vá para "Gerenciar Alunos" para adicionar alunos.'
-                }
-              </Text>
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyIcon}>📊</Text>
+                <Text style={styles.emptyText}>
+                  {selectedClass 
+                    ? `Nenhum aluno cadastrado na turma ${selectedClass?.name}.`
+                    : 'Nenhum aluno cadastrado.'
+                  }
+                </Text>
+                <Text style={styles.emptySubtext}>
+                  {selectedClass 
+                    ? 'Vá para "Gerenciar Alunos" para adicionar alunos a esta turma.'
+                    : 'Vá para "Gerenciar Alunos" para adicionar alunos.'
+                  }
+                </Text>
+                <Button 
+                  mode="contained" 
+                  onPress={() => navigation.navigate('StudentManager')}
+                  style={styles.addButton}
+                  icon="account-plus"
+                  contentStyle={styles.buttonContent}
+                >
+                  Gerenciar Alunos
+                </Button>
+              </View>
             ) : (
               <FlatList
                 data={classStudents}
@@ -236,6 +424,27 @@ function StudentAverages({ navigation }) {
             )}
           </Card.Content>
         </Card>
+
+        {/* Legenda de Status */}
+        <Card style={styles.legendCard}>
+          <Card.Content>
+            <Text style={styles.legendTitle}>🎯 Legenda de Status</Text>
+            <View style={styles.legendItems}>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendColor, { backgroundColor: '#4caf50' }]} />
+                <Text style={styles.legendText}>Aprovado (≥ 7.0)</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendColor, { backgroundColor: '#ff9800' }]} />
+                <Text style={styles.legendText}>Recuperação (5.0 - 6.9)</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendColor, { backgroundColor: '#f44336' }]} />
+                <Text style={styles.legendText}>{`Reprovado (<= 5.0)`}</Text>
+              </View>
+            </View>
+          </Card.Content>
+        </Card>
       </ScrollView>
     </View>
   );
@@ -247,23 +456,88 @@ const styles = StyleSheet.create({
     padding: isSmallScreen ? 8 : 10,
     backgroundColor: '#f6f6f6',
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f6f6f6',
+  },
+  loadingCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+  },
+  loadingText: {
+    fontSize: 16,
+    textAlign: 'center',
+    color: '#666',
+  },
   scrollContent: {
     flexGrow: 1,
   },
-  summaryCard: {
+  statsCard: {
     marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#ffffff',
     borderRadius: isSmallScreen ? 10 : 12,
   },
-  summaryTitle: {
+  statsTitle: {
     fontSize: isSmallScreen ? 18 : 20,
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: isSmallScreen ? 12 : 15,
     color: '#000000',
   },
-  classSelection: {
-    marginBottom: isSmallScreen ? 12 : 15,
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: isSmallScreen ? 8 : 10,
+    marginBottom: isSmallScreen ? 10 : 12,
+  },
+  statItem: {
+    alignItems: 'center',
+    width: '30%',
+    marginBottom: isSmallScreen ? 8 : 10,
+  },
+  statNumber: {
+    fontSize: isSmallScreen ? 20 : 24,
+    fontWeight: 'bold',
+    color: '#2196f3',
+    marginBottom: 4,
+  },
+  statApproved: {
+    color: '#4caf50',
+  },
+  statRecovery: {
+    color: '#ff9800',
+  },
+  statFailed: {
+    color: '#f44336',
+  },
+  statRate: {
+    color: '#2196f3',
+  },
+  statLabel: {
+    fontSize: isSmallScreen ? 10 : 12,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: isSmallScreen ? 12 : 14,
+  },
+  approvalProgress: {
+    height: isSmallScreen ? 6 : 8,
+    borderRadius: 4,
+    marginTop: isSmallScreen ? 6 : 8,
+  },
+  selectorCard: {
+    marginBottom: isSmallScreen ? 12 : 16,
+    backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+  },
+  selectorTitle: {
+    fontSize: isSmallScreen ? 16 : 18,
+    fontWeight: 'bold',
+    marginBottom: isSmallScreen ? 10 : 12,
+    color: '#000000',
   },
   classChipsContainer: {
     gap: isSmallScreen ? 6 : 8,
@@ -276,45 +550,80 @@ const styles = StyleSheet.create({
   selectedClassChip: {
     backgroundColor: '#2196f3',
   },
-  summaryStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statNumber: {
-    fontSize: isSmallScreen ? 28 : 32,
-    fontWeight: 'bold',
-    color: '#2196f3',
-  },
-  statLabel: {
+  selectedClassInfo: {
     fontSize: isSmallScreen ? 12 : 14,
+    marginTop: isSmallScreen ? 8 : 10,
     color: '#666',
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  selectedClassName: {
+    fontWeight: 'bold',
+    color: '#1976d2',
+  },
+  chartsButton: {
+    marginTop: isSmallScreen ? 10 : 12,
   },
   listCard: {
     marginBottom: isSmallScreen ? 16 : 20,
     backgroundColor: '#ffffff',
     borderRadius: isSmallScreen ? 10 : 12,
   },
+  listHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: isSmallScreen ? 12 : 15,
+  },
   listTitle: {
     fontSize: isSmallScreen ? 18 : 20,
     fontWeight: 'bold',
-    marginBottom: isSmallScreen ? 12 : 15,
     color: '#000000',
   },
-  emptyText: {
-    textAlign: 'center',
-    fontStyle: 'italic',
-    marginVertical: isSmallScreen ? 16 : 20,
-    color: '#666',
+  listCount: {
     fontSize: isSmallScreen ? 14 : 16,
-    lineHeight: isSmallScreen ? 20 : 22,
+    color: '#666',
+    fontWeight: '600',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: isSmallScreen ? 30 : 40,
+  },
+  emptyIcon: {
+    fontSize: isSmallScreen ? 48 : 56,
+    marginBottom: isSmallScreen ? 12 : 16,
+  },
+  emptyText: {
+    fontSize: isSmallScreen ? 16 : 18,
+    textAlign: 'center',
+    color: '#666',
+    marginBottom: isSmallScreen ? 8 : 10,
+    fontWeight: '600',
+    lineHeight: isSmallScreen ? 22 : 24,
+  },
+  emptySubtext: {
+    fontSize: isSmallScreen ? 14 : 16,
+    textAlign: 'center',
+    color: '#999',
+    fontStyle: 'italic',
+    marginBottom: isSmallScreen ? 16 : 20,
+    lineHeight: isSmallScreen ? 18 : 20,
+  },
+  addButton: {
+    marginTop: isSmallScreen ? 8 : 10,
+  },
+  buttonContent: {
+    height: isSmallScreen ? 44 : 48,
   },
   studentCard: {
     marginBottom: isSmallScreen ? 8 : 10,
     backgroundColor: '#ffffff',
     borderRadius: isSmallScreen ? 8 : 10,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   studentCardContent: {
     padding: isSmallScreen ? 12 : 16,
@@ -363,11 +672,41 @@ const styles = StyleSheet.create({
     fontSize: isSmallScreen ? 14 : 16,
     marginBottom: isSmallScreen ? 4 : 5,
     color: '#000000',
+    lineHeight: isSmallScreen ? 18 : 20,
   },
   dateText: {
     fontSize: isSmallScreen ? 12 : 14,
     fontStyle: 'italic',
     color: '#666',
+  },
+  legendCard: {
+    marginBottom: isSmallScreen ? 16 : 20,
+    backgroundColor: '#f8f9fa',
+    borderRadius: isSmallScreen ? 10 : 12,
+  },
+  legendTitle: {
+    fontSize: isSmallScreen ? 16 : 18,
+    fontWeight: 'bold',
+    marginBottom: isSmallScreen ? 10 : 12,
+    color: '#000000',
+    textAlign: 'center',
+  },
+  legendItems: {
+    gap: isSmallScreen ? 8 : 10,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  legendColor: {
+    width: isSmallScreen ? 12 : 16,
+    height: isSmallScreen ? 12 : 16,
+    borderRadius: isSmallScreen ? 6 : 8,
+    marginRight: isSmallScreen ? 8 : 12,
+  },
+  legendText: {
+    fontSize: isSmallScreen ? 14 : 16,
+    color: '#000000',
   },
 });
 

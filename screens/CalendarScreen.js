@@ -20,10 +20,12 @@ import {
   IconButton,
   Divider
 } from 'react-native-paper';
-import { getEvents, addEvent, deleteEvent, getClasses } from '../utils/storage';
+import { getEvents, addEvent, deleteEvent, getClasses, DataService } from '../utils/storage';
+import { useAuth } from '../contexts/AuthContext';
 
 const { width, height } = Dimensions.get('window');
 
+// Componente de Card de Evento
 const EventCard = memo(({ event, onDelete }) => {
   const formatDate = (dateString) => {
     const date = new Date(dateString);
@@ -508,11 +510,14 @@ const DatePickerModal = memo(({
 });
 
 function CalendarScreen({ navigation }) {
+  const { getDisplayName } = useAuth();
+  
   const [events, setEvents] = useState([]);
   const [classes, setClasses] = useState([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [datePickerVisible, setDatePickerVisible] = useState(false);
   const [timePickerVisible, setTimePickerVisible] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   
   const [newEvent, setNewEvent] = useState({
     title: '',
@@ -530,13 +535,22 @@ function CalendarScreen({ navigation }) {
     { value: 'outro', label: 'Outro', icon: 'calendar' }
   ];
 
+  /**
+   * Carregar eventos e turmas do Firebase
+   */
   const loadEvents = useCallback(async () => {
     try {
-      const [loadedEvents, loadedClasses] = await Promise.all([
+      setIsLoading(true);
+      const [eventsResult, classesResult] = await Promise.all([
         getEvents(),
         getClasses()
       ]);
+
+      // Extrair arrays dos resultados
+      const loadedEvents = eventsResult.events || [];
+      const loadedClasses = classesResult.classes || [];
       
+      // Adicionar nome da turma aos eventos
       const eventsWithClassNames = loadedEvents.map(event => {
         const classItem = loadedClasses.find(cls => cls.id === event.classId);
         return {
@@ -548,10 +562,16 @@ function CalendarScreen({ navigation }) {
       setEvents(eventsWithClassNames);
       setClasses(loadedClasses);
     } catch (error) {
+      console.error('Erro ao carregar eventos:', error);
       Alert.alert('Erro', 'Não foi possível carregar os eventos');
+    } finally {
+      setIsLoading(false);
     }
   }, []);
 
+  /**
+   * Adicionar novo evento
+   */
   const handleAddEvent = useCallback(async () => {
     if (!newEvent.title.trim()) {
       Alert.alert('Erro', 'Por favor, insira um título para o evento');
@@ -565,9 +585,12 @@ function CalendarScreen({ navigation }) {
         description: newEvent.description.trim()
       };
 
-      const savedEvent = await addEvent(eventToSave);
-      if (savedEvent) {
+      // Salvar evento no Firebase
+      const result = await addEvent(eventToSave);
+      
+      if (result.success) {
         setModalVisible(false);
+        
         // Reset form after a small delay to allow animation to complete
         setTimeout(() => {
           setNewEvent({
@@ -578,16 +601,22 @@ function CalendarScreen({ navigation }) {
             classId: ''
           });
         }, 300);
+        
+        // Recarregar eventos
         await loadEvents();
-        Alert.alert('Sucesso', 'Evento adicionado ao calendário!');
+        Alert.alert('✅ Sucesso', 'Evento adicionado ao calendário!');
       } else {
-        Alert.alert('Erro', 'Não foi possível salvar o evento');
+        Alert.alert('❌ Erro', result.error || 'Não foi possível salvar o evento');
       }
     } catch (error) {
-      Alert.alert('Erro', 'Ocorreu um erro ao salvar o evento');
+      console.error('Erro ao salvar evento:', error);
+      Alert.alert('❌ Erro', 'Ocorreu um erro ao salvar o evento');
     }
   }, [newEvent, loadEvents]);
 
+  /**
+   * Excluir evento
+   */
   const handleDeleteEvent = useCallback(async (eventId) => {
     Alert.alert(
       'Confirmar Exclusão',
@@ -599,15 +628,17 @@ function CalendarScreen({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              const success = await deleteEvent(eventId);
-              if (success) {
+              const result = await deleteEvent(eventId);
+              
+              if (result.success) {
                 await loadEvents();
-                Alert.alert('Sucesso', 'Evento excluído!');
+                Alert.alert('✅ Sucesso', 'Evento excluído!');
               } else {
-                Alert.alert('Erro', 'Não foi possível excluir o evento');
+                Alert.alert('❌ Erro', result.error || 'Não foi possível excluir o evento');
               }
             } catch (error) {
-              Alert.alert('Erro', 'Ocorreu um erro ao excluir o evento');
+              console.error('Erro ao excluir evento:', error);
+              Alert.alert('❌ Erro', 'Ocorreu um erro ao excluir o evento');
             }
           }
         }
@@ -615,6 +646,9 @@ function CalendarScreen({ navigation }) {
     );
   }, [loadEvents]);
 
+  /**
+   * Confirmar data selecionada
+   */
   const handleDateConfirm = useCallback((selectedDate) => {
     if (selectedDate) {
       const currentDate = newEvent.date;
@@ -624,6 +658,9 @@ function CalendarScreen({ navigation }) {
     }
   }, [newEvent.date]);
 
+  /**
+   * Confirmar hora selecionada
+   */
   const handleTimeConfirm = useCallback((selectedTime) => {
     if (selectedTime) {
       const currentDate = newEvent.date;
@@ -633,6 +670,9 @@ function CalendarScreen({ navigation }) {
     }
   }, [newEvent.date]);
 
+  /**
+   * Obter eventos futuros (próximos)
+   */
   const getUpcomingEvents = useCallback(() => {
     const now = new Date();
     return events
@@ -641,6 +681,9 @@ function CalendarScreen({ navigation }) {
       .slice(0, 10);
   }, [events]);
 
+  /**
+   * Obter eventos passados
+   */
   const getPastEvents = useCallback(() => {
     const now = new Date();
     return events
@@ -649,6 +692,9 @@ function CalendarScreen({ navigation }) {
       .slice(0, 10);
   }, [events]);
 
+  /**
+   * Fechar modal
+   */
   const handleCloseModal = useCallback(() => {
     setModalVisible(false);
     // Reset form when closing without saving
@@ -663,15 +709,20 @@ function CalendarScreen({ navigation }) {
     }, 300);
   }, []);
 
+  /**
+   * Fechar seletor de data/hora
+   */
   const handleCloseDateTimePicker = useCallback(() => {
     setDatePickerVisible(false);
     setTimePickerVisible(false);
   }, []);
 
+  // Carregar dados quando o componente montar
   useEffect(() => {
     loadEvents();
   }, [loadEvents]);
 
+  // Recarregar quando a tela receber foco
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
       loadEvents();
@@ -686,6 +737,7 @@ function CalendarScreen({ navigation }) {
   return (
     <View style={styles.container}>
       <ScrollView>
+        {/* Cabeçalho */}
         <Card style={styles.headerCard}>
           <Card.Content>
             <Text style={styles.headerTitle}>
@@ -707,6 +759,7 @@ function CalendarScreen({ navigation }) {
           </Card.Content>
         </Card>
 
+        {/* Eventos Futuros */}
         {upcomingEvents.length > 0 && (
           <Card style={styles.sectionCard}>
             <Card.Content>
@@ -724,6 +777,7 @@ function CalendarScreen({ navigation }) {
           </Card>
         )}
 
+        {/* Eventos Passados */}
         {pastEvents.length > 0 && (
           <Card style={styles.sectionCard}>
             <Card.Content>
@@ -741,7 +795,8 @@ function CalendarScreen({ navigation }) {
           </Card>
         )}
 
-        {events.length === 0 && (
+        {/* Estado Vazio */}
+        {events.length === 0 && !isLoading && (
           <Card style={styles.emptyCard}>
             <Card.Content style={styles.emptyContent}>
               <Text style={styles.emptyIcon}>📅</Text>
@@ -751,6 +806,15 @@ function CalendarScreen({ navigation }) {
               <Text style={styles.emptyText}>
                 Clique em "Novo Evento" para adicionar seu primeiro evento ao calendário
               </Text>
+            </Card.Content>
+          </Card>
+        )}
+
+        {/* Loading */}
+        {isLoading && (
+          <Card style={styles.loadingCard}>
+            <Card.Content style={styles.loadingContent}>
+              <Text style={styles.loadingText}>Carregando eventos...</Text>
             </Card.Content>
           </Card>
         )}
@@ -1040,6 +1104,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#999',
     lineHeight: 20,
+  },
+  loadingCard: {
+    marginBottom: 20,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    elevation: 2,
+  },
+  loadingContent: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
   },
   // Estilos do Overlay
   overlay: {

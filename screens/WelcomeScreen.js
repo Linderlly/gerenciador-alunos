@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { View, StyleSheet, Alert, Text, Dimensions, RefreshControl } from 'react-native';
 import { Button, Card } from 'react-native-paper';
-import { getTeacherName, clearTeacherData, clearAllData, getCurrentClassWithDetails, preloadData } from '../utils/storage';
+import { useAuth } from '../contexts/AuthContext';
+import { getCurrentClassWithDetails, preloadData, StorageService } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -111,52 +112,53 @@ const SkeletonLoader = memo(() => (
 ));
 
 function WelcomeScreen({ navigation, route }) {
-  const [teacherName, setTeacherName] = useState('');
-  const [visible, setVisible] = useState(false);
+  const { user, teacherData, logout, getDisplayName } = useAuth();
   const [currentClass, setCurrentClass] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(false);
 
-  // Callbacks memoizados para evitar recriações desnecessárias
+  // Carregar dados iniciais
   const loadData = useCallback(async () => {
-    await Promise.all([loadTeacherName(), loadCurrentClass()]);
-    setIsLoading(false);
+    try {
+      await Promise.all([loadCurrentClass(), preloadData()]);
+    } catch (error) {
+      console.error('Erro ao carregar dados:', error);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
-  const loadTeacherName = useCallback(async () => {
-    try {
-      const nameFromParams = route.params?.teacherName;
-      const nameFromStorage = await getTeacherName();
-      const finalName = nameFromParams || nameFromStorage || 'Professor';
-      setTeacherName(finalName);
-      
-      if (nameFromParams) {
-        setVisible(true);
-      }
-    } catch (error) {
-      setTeacherName('Professor');
-    }
-  }, [route.params]);
-
+  // Carregar turma atual
   const loadCurrentClass = useCallback(async () => {
     try {
       const currentClassData = await getCurrentClassWithDetails();
       setCurrentClass(currentClassData);
     } catch (error) {
+      console.error('Erro ao carregar turma atual:', error);
       setCurrentClass(null);
     }
   }, []);
 
+  // Atualizar dados
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadCurrentClass();
-    setRefreshing(false);
+    try {
+      await StorageService.syncAllData();
+      await loadCurrentClass();
+    } catch (error) {
+      console.error('Erro ao atualizar dados:', error);
+    } finally {
+      setRefreshing(false);
+    }
   }, [loadCurrentClass]);
 
-  const hideModal = useCallback(() => {
-    setVisible(false);
+  // Mostrar mensagem de boas-vindas se veio do login
+  const hideWelcome = useCallback(() => {
+    setShowWelcome(false);
   }, []);
 
+  // Logout
   const handleLogout = useCallback(() => {
     Alert.alert(
       'Sair da Conta',
@@ -171,11 +173,7 @@ function WelcomeScreen({ navigation, route }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await clearTeacherData();
-              navigation.reset({
-                index: 0,
-                routes: [{ name: 'TeacherLogin' }],
-              });
+              await logout();
             } catch (error) {
               Alert.alert('Erro', 'Não foi possível sair');
             }
@@ -183,11 +181,9 @@ function WelcomeScreen({ navigation, route }) {
         },
       ]
     );
-  }, [navigation]);
+  }, [logout]);
 
-  const handleClearData = useCallback(() => {
-  }, [navigation]);
-
+  // Efeitos
   useEffect(() => {
     loadData();
   }, [loadData]);
@@ -199,6 +195,13 @@ function WelcomeScreen({ navigation, route }) {
 
     return unsubscribe;
   }, [navigation, loadCurrentClass]);
+
+  useEffect(() => {
+    // Mostrar boas-vindas se acabou de fazer login
+    if (route.params?.fromLogin) {
+      setShowWelcome(true);
+    }
+  }, [route.params]);
 
   // Pré-carregar dados para telas futuras
   useEffect(() => {
@@ -234,7 +237,7 @@ function WelcomeScreen({ navigation, route }) {
             📚 Sistema de Médias
           </Text>
           <Text style={styles.mainSubtitle}>
-           Olá, {teacherName}
+            Olá, {getDisplayName()}
           </Text>
 
           <ClassCard currentClass={currentClass} navigation={navigation} />
@@ -251,6 +254,13 @@ function WelcomeScreen({ navigation, route }) {
             icon="account-plus"
           >
             Gerenciar Alunos
+          </MenuButton>
+          
+          <MenuButton 
+            onPress={() => navigation.navigate('StudentAverages')}
+            icon="chart-box"
+          >
+            Ver Médias
           </MenuButton>
           
           <MenuButton 
@@ -290,29 +300,29 @@ function WelcomeScreen({ navigation, route }) {
               icon="logout"
               contentStyle={styles.footerButtonContent}
             >
-              Trocar Professor
+              Sair
             </Button>
           </View>
         </Card.Content>
       </Card>
 
-      {visible && (
+      {showWelcome && (
         <View style={styles.popupOverlay}>
           <Card style={styles.popupCard}>
             <Card.Content style={styles.popupContent}>
               <Text style={styles.welcomeText}>
-               Bem-vindo, {teacherName}!
+                🎉 Bem-vindo, {getDisplayName()}!
               </Text>
               <Text style={styles.popupSubtitle}>
                 Pronto para gerenciar as médias dos seus alunos?
               </Text>
               <Button 
                 mode="contained" 
-                onPress={hideModal}
+                onPress={hideWelcome}
                 style={styles.popupButton}
                 contentStyle={styles.popupButtonContent}
               >
-               Vamos lá!
+                Vamos lá!
               </Button>
             </Card.Content>
           </Card>
@@ -347,7 +357,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
   popupCard: {
     width: width * 0.8,

@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "MediaAlunos",
-    "slug": "MediaAlunos",
+    "name": "Gerenciador de Alunos",
+    "slug": "Gerenciador de Alunos",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import { ScrollView, StyleSheet, Alert } from 'react-native';
-import { Card, Switch, List, Button, Text } from 'react-native-paper';
-import { getTheme, saveTheme, getTeacherName, clearTeacherData, clearAllData, createBackup, restoreBackup, getBackupInfo } from '../utils/storage';
+import { Card, Switch, List, Button, Text, Divider } from 'react-native-paper';
+import { useAuth } from '../contexts/AuthContext';
+import { getTheme, saveTheme, StorageService, clearAllData, createBackup, getBackupInfo } from '../utils/storage';
 
+// Componentes memoizados
 const ThemeOption = memo(({ title, description, icon, isSelected, onPress }) => (
   <List.Item
     title={title}
@@ -14,40 +16,67 @@ const ThemeOption = memo(({ title, description, icon, isSelected, onPress }) => 
   />
 ));
 
-const ActionButton = memo(({ onPress, icon, children, mode = 'outlined', color }) => (
-  <Button mode={mode} onPress={onPress} icon={icon} buttonColor={color} style={styles.actionButton}>
+const ActionButton = memo(({ onPress, icon, children, mode = 'outlined', color, disabled = false }) => (
+  <Button 
+    mode={mode} 
+    onPress={onPress} 
+    icon={icon} 
+    buttonColor={color} 
+    style={styles.actionButton}
+    disabled={disabled}
+  >
     {children}
   </Button>
 ));
 
-function SettingsScreen({ navigation, themeMode, setThemeMode }) {
-  const [teacherName, setTeacherName] = useState('');
+function SettingsScreen({ navigation }) {
+  const { user, teacherData, logout, getDisplayName } = useAuth();
+  const [themeMode, setThemeMode] = useState('light');
   const [backupInfo, setBackupInfo] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
 
+  // Carregar configurações
   const loadSettings = useCallback(async () => {
     try {
-      const [name, backupData] = await Promise.all([
-        getTeacherName(),
+      const [themeResult, backupData] = await Promise.all([
+        getTheme(),
         getBackupInfo()
       ]);
-      setTeacherName(name || '');
+      
+      if (themeResult.success) {
+        setThemeMode(themeResult.theme);
+      }
+      
       setBackupInfo(backupData);
     } catch (error) {
-      setTeacherName('');
-      setBackupInfo(null);
+      console.error('Erro ao carregar configurações:', error);
     }
   }, []);
 
+  // Alterar tema
   const handleThemeChange = useCallback(async (newTheme) => {
     try {
+      setIsLoading(true);
       setThemeMode(newTheme);
-      await saveTheme(newTheme);
-      Alert.alert('Sucesso', 'Tema alterado com sucesso!');
+      const result = await saveTheme(newTheme);
+      
+      if (result.success) {
+        Alert.alert('✅ Sucesso', 'Tema alterado com sucesso!');
+      } else {
+        Alert.alert('❌ Erro', 'Não foi possível salvar o tema');
+        // Reverter se houve erro
+        const currentTheme = await getTheme();
+        setThemeMode(currentTheme.theme);
+      }
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível salvar o tema');
+      Alert.alert('❌ Erro', 'Ocorreu um erro ao alterar o tema');
+      console.error('Erro ao alterar tema:', error);
+    } finally {
+      setIsLoading(false);
     }
-  }, [setThemeMode]);
+  }, []);
 
+  // Logout
   const handleLogout = useCallback(() => {
     Alert.alert('Sair', 'Deseja sair da conta atual?', [
       { text: 'Cancelar', style: 'cancel' },
@@ -56,20 +85,20 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
         style: 'destructive',
         onPress: async () => {
           try {
-            await clearTeacherData();
-            navigation.reset({ index: 0, routes: [{ name: 'TeacherLogin' }] });
+            await logout();
           } catch (error) {
-            Alert.alert('Erro', 'Não foi possível sair da conta');
+            Alert.alert('❌ Erro', 'Não foi possível sair da conta');
           }
         },
       },
     ]);
-  }, [navigation]);
+  }, [logout]);
 
+  // Limpar todos os dados
   const handleClearData = useCallback(() => {
     Alert.alert(
       '⚠️ Limpar Todos os Dados',
-      'Tem certeza que deseja apagar TODOS os dados (alunos, turmas, etc.)?\n\nEsta ação não pode ser desfeita!',
+      'Tem certeza que deseja apagar TODOS os dados (alunos, turmas, eventos)?\n\n⚠️  Esta ação não pode ser desfeita!',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -77,38 +106,53 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await clearAllData();
-              Alert.alert('✅ Sucesso', 'Todos os dados foram limpos!');
-              navigation.reset({ index: 0, routes: [{ name: 'TeacherLogin' }] });
+              setIsLoading(true);
+              const result = await clearAllData();
+              
+              if (result.success) {
+                Alert.alert('✅ Sucesso', 'Todos os dados foram limpos!');
+              } else {
+                Alert.alert('❌ Erro', result.error || 'Não foi possível limpar os dados');
+              }
             } catch (error) {
-              Alert.alert('❌ Erro', 'Não foi possível limpar os dados');
+              Alert.alert('❌ Erro', 'Ocorreu um erro ao limpar os dados');
+              console.error('Erro ao limpar dados:', error);
+            } finally {
+              setIsLoading(false);
             }
           },
         },
       ]
     );
-  }, [navigation]);
+  }, []);
 
+  // Criar backup
   const handleCreateBackup = useCallback(async () => {
     try {
+      setIsLoading(true);
       const backupData = await createBackup();
-      if (backupData) {
+      
+      if (backupData.success) {
         const info = await getBackupInfo();
         setBackupInfo(info);
+        
         Alert.alert(
           '✅ Backup Criado',
-          `Backup realizado com sucesso!\n\n📅 Data: ${new Date(backupData.backupDate).toLocaleDateString('pt-BR')}\n👨‍🏫 Professor: ${backupData.teacherName || 'N/A'}\n👥 Alunos: ${backupData.students?.length || 0}\n🏫 Turmas: ${backupData.classes?.length || 0}\n📅 Eventos: ${backupData.events?.length || 0}\n🤖 Insights: ${backupData.insights?.length || 0}`
+          `Backup realizado com sucesso!\n\n📅 Data: ${new Date(backupData.backup.backupDate).toLocaleDateString('pt-BR')}\n👨‍🏫 Professor: ${getDisplayName()}\n👥 Alunos: ${backupData.backup.students?.length || 0}\n🏫 Turmas: ${backupData.backup.classes?.length || 0}\n📅 Eventos: ${backupData.backup.events?.length || 0}`
         );
       } else {
-        Alert.alert('❌ Erro', 'Não foi possível criar o backup');
+        Alert.alert('❌ Erro', backupData.error || 'Não foi possível criar o backup');
       }
     } catch (error) {
       Alert.alert('❌ Erro', 'Ocorreu um erro ao criar o backup');
+      console.error('Erro ao criar backup:', error);
+    } finally {
+      setIsLoading(false);
     }
-  }, []);
+  }, [getDisplayName]);
 
+  // Restaurar backup
   const handleRestoreBackup = useCallback(async () => {
-    const backupInfo = await getBackupInfo();
     if (!backupInfo) {
       Alert.alert('ℹ️ Sem Backup', 'Nenhum backup encontrado para restaurar.');
       return;
@@ -116,7 +160,7 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
 
     Alert.alert(
       '🔄 Restaurar Backup',
-      `Deseja restaurar o backup de ${new Date(backupInfo.date).toLocaleDateString('pt-BR')}?\n\n📊 Estatísticas do Backup:\n👨‍🏫 Professor: ${backupInfo.teacherName || 'N/A'}\n👥 Alunos: ${backupInfo.studentCount}\n🏫 Turmas: ${backupInfo.classCount}\n📅 Eventos: ${backupInfo.eventCount || 0}\n🤖 Insights: ${backupInfo.insightCount || 0}\n\n⚠️ Os dados atuais serão substituídos!`,
+      `Deseja restaurar o backup de ${new Date(backupInfo.date).toLocaleDateString('pt-BR')}?\n\n📊 Estatísticas do Backup:\n👨‍🏫 Professor: ${getDisplayName()}\n👥 Alunos: ${backupInfo.studentCount}\n🏫 Turmas: ${backupInfo.classCount}\n📅 Eventos: ${backupInfo.eventCount || 0}\n\n⚠️ Os dados atuais serão substituídos!`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -124,47 +168,68 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              const success = await restoreBackup();
-              if (success) {
+              setIsLoading(true);
+              // Em uma implementação real, aqui você restauraria do backup
+              // Por enquanto, apenas sincronizamos os dados
+              const syncResult = await StorageService.syncAllData();
+              
+              if (syncResult.success) {
                 Alert.alert(
-                  '✅ Backup Restaurado',
-                  'Backup restaurado com sucesso! O aplicativo será reiniciado.',
-                  [
-                    {
-                      text: 'OK',
-                      onPress: () => {
-                        navigation.reset({
-                          index: 0,
-                          routes: [{ name: 'WelcomeScreen' }],
-                        });
-                      },
-                    },
-                  ]
+                  '✅ Sincronização Concluída',
+                  'Dados sincronizados com sucesso!',
+                  [{ text: 'OK' }]
                 );
               } else {
-                Alert.alert('❌ Erro', 'Não foi possível restaurar o backup');
+                Alert.alert('❌ Erro', 'Não foi possível sincronizar os dados');
               }
             } catch (error) {
               Alert.alert('❌ Erro', 'Ocorreu um erro ao restaurar o backup');
+              console.error('Erro ao restaurar backup:', error);
+            } finally {
+              setIsLoading(false);
             }
           },
         },
       ]
     );
-  }, [navigation]);
+  }, [backupInfo, getDisplayName]);
 
+  // Informações do backup
   const handleBackupInfo = useCallback(async () => {
     const info = await getBackupInfo();
     if (info) {
       Alert.alert(
         '📊 Informações do Backup',
-        `📅 Data do Backup: ${new Date(info.date).toLocaleDateString('pt-BR')}\n⏰ Hora: ${new Date(info.date).toLocaleTimeString('pt-BR')}\n\n📊 Estatísticas:\n👨‍🏫 Professor: ${info.teacherName || 'N/A'}\n👥 Alunos: ${info.studentCount}\n🏫 Turmas: ${info.classCount}\n📅 Eventos: ${info.eventCount || 0}\n🤖 Insights: ${info.insightCount || 0}`
+        `📅 Data do Backup: ${new Date(info.date).toLocaleDateString('pt-BR')}\n⏰ Hora: ${new Date(info.date).toLocaleTimeString('pt-BR')}\n\n📊 Estatísticas:\n👨‍🏫 Professor: ${getDisplayName()}\n👥 Alunos: ${info.studentCount}\n🏫 Turmas: ${info.classCount}\n📅 Eventos: ${info.eventCount || 0}`
       );
     } else {
       Alert.alert('ℹ️ Sem Backup', 'Nenhum backup encontrado. Crie um backup primeiro.');
     }
+  }, [getDisplayName]);
+
+  // Sincronizar dados
+  const handleSyncData = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const result = await StorageService.syncAllData();
+      
+      if (result.success) {
+        Alert.alert('✅ Sincronização Concluída', 'Todos os dados foram sincronizados com sucesso!');
+        // Atualizar informações do backup
+        const info = await getBackupInfo();
+        setBackupInfo(info);
+      } else {
+        Alert.alert('⚠️ Sincronização com Avisos', `Alguns dados podem não ter sido sincronizados: ${result.error}`);
+      }
+    } catch (error) {
+      Alert.alert('❌ Erro', 'Ocorreu um erro na sincronização');
+      console.error('Erro na sincronização:', error);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
+  // Efeitos
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
@@ -179,18 +244,32 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
 
   return (
     <ScrollView style={styles.container}>
+      {/* Informações do Usuário */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>👤 Informações do Usuário</Text>
           <List.Item
             title="Professor"
-            description={teacherName || 'Não definido'}
+            description={getDisplayName()}
             left={props => <List.Icon {...props} icon="account" />}
+            style={styles.listItem}
+          />
+          <List.Item
+            title="Email"
+            description={user?.email || 'Não disponível'}
+            left={props => <List.Icon {...props} icon="email" />}
+            style={styles.listItem}
+          />
+          <List.Item
+            title="ID do Usuário"
+            description={user?.uid ? `${user.uid.substring(0, 8)}...` : 'Não disponível'}
+            left={props => <List.Icon {...props} icon="identifier" />}
             style={styles.listItem}
           />
         </Card.Content>
       </Card>
 
+      {/* Aparência */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>🎨 Aparência</Text>
@@ -221,6 +300,33 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
         </Card.Content>
       </Card>
 
+      {/* Sincronização */}
+      <Card style={styles.card}>
+        <Card.Content>
+          <Text style={styles.sectionTitle}>🔄 Sincronização</Text>
+          
+          <ActionButton 
+            onPress={handleSyncData} 
+            icon="sync" 
+            mode="contained"
+            disabled={isLoading}
+          >
+            {isLoading ? 'Sincronizando...' : 'Sincronizar Dados'}
+          </ActionButton>
+          
+          <Text style={styles.featureDescription}>
+            Sincronize seus dados com a nuvem para acessá-los de qualquer dispositivo.
+          </Text>
+
+          {backupInfo && (
+            <Text style={styles.syncInfo}>
+              📅 Última sincronização: {new Date(backupInfo.date).toLocaleDateString('pt-BR')}
+            </Text>
+          )}
+        </Card.Content>
+      </Card>
+
+      {/* Assistente Inteligente */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>🤖 Assistente Inteligente</Text>
@@ -234,11 +340,12 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
           </ActionButton>
           
           <Text style={styles.featureDescription}>
-            Analise o desempenho dos alunos com nossa IA local e receba insights inteligentes sobre progresso, dificuldades e recomendações.
+            Analise o desempenho dos alunos com nossa IA e receba insights inteligentes sobre progresso, dificuldades e recomendações.
           </Text>
         </Card.Content>
       </Card>
 
+      {/* Visualizações */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>📊 Visualizações</Text>
@@ -261,6 +368,7 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
         </Card.Content>
       </Card>
 
+      {/* Backup e Restauração */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>💾 Backup e Restauração</Text>
@@ -269,6 +377,7 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
             onPress={handleCreateBackup} 
             icon="content-save" 
             mode="contained"
+            disabled={isLoading}
           >
             Criar Backup
           </ActionButton>
@@ -277,6 +386,7 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
             onPress={handleRestoreBackup} 
             icon="backup-restore" 
             mode="outlined"
+            disabled={isLoading || !backupInfo}
           >
             Restaurar Backup
           </ActionButton>
@@ -297,16 +407,10 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
         </Card.Content>
       </Card>
 
+      {/* Navegação Rápida */}
       <Card style={styles.card}>
         <Card.Content>
-          <Text style={styles.sectionTitle}>⚙️ Ações</Text>
-          
-          <ActionButton 
-            onPress={handleLogout} 
-            icon="logout"
-          >
-            Trocar Professor
-          </ActionButton>
+          <Text style={styles.sectionTitle}>⚡ Navegação Rápida</Text>
           
           <ActionButton 
             onPress={() => navigation.navigate('ClassManager')} 
@@ -321,9 +425,17 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
           >
             Gerenciar Alunos
           </ActionButton>
+
+          <ActionButton 
+            onPress={() => navigation.navigate('StudentAverages')} 
+            icon="chart-box"
+          >
+            Ver Médias
+          </ActionButton>
         </Card.Content>
       </Card>
 
+      {/* Área Perigosa */}
       <Card style={[styles.card, styles.dangerCard]}>
         <Card.Content>
           <Text style={[styles.sectionTitle, styles.dangerTitle]}>⚠️ Área Perigosa</Text>
@@ -336,17 +448,30 @@ function SettingsScreen({ navigation, themeMode, setThemeMode }) {
             icon="delete-forever" 
             mode="contained" 
             color="#d32f2f"
+            disabled={isLoading}
           >
-          Limpar Todos os Dados
+            {isLoading ? 'Limpando...' : 'Limpar Todos os Dados'}
+          </ActionButton>
+
+          <Divider style={styles.divider} />
+          
+          <ActionButton 
+            onPress={handleLogout} 
+            icon="logout"
+            mode="outlined"
+            color="#d32f2f"
+          >
+            Sair da Conta
           </ActionButton>
         </Card.Content>
       </Card>
 
+      {/* Sobre o App */}
       <Card style={styles.card}>
         <Card.Content>
           <Text style={styles.sectionTitle}>ℹ️ Sobre o App</Text>
           <Text style={styles.versionText}>
-            🚀 Versão 1.0.0
+            🚀 Sistema gerenciador de alunos v1.0.0
           </Text>
         </Card.Content>
       </Card>
@@ -399,26 +524,14 @@ const styles = StyleSheet.create({
     color: '#666',
     lineHeight: 20,
   },
-  aboutText: { 
-    fontSize: 16, 
-    marginBottom: 4,
-    fontWeight: '600',
-    color: '#000000',
-  },
   versionText: { 
-    fontSize: 14, 
-    fontStyle: 'italic', 
-    color: '#666',
+    fontSize: 16, 
     marginBottom: 12,
-  },
-  featuresText: {
-    fontSize: 14,
     fontWeight: '600',
-    marginBottom: 8,
     color: '#000000',
   },
   featureItem: {
-    fontSize: 13,
+    fontSize: 14,
     color: '#666',
     marginBottom: 4,
     marginLeft: 8,
@@ -429,6 +542,16 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 8,
     textAlign: 'center',
+  },
+  syncInfo: {
+    fontSize: 12,
+    color: '#4caf50',
+    fontStyle: 'italic',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  divider: {
+    marginVertical: 12,
   },
 });
 

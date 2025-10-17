@@ -12,7 +12,8 @@ import {
   Dimensions
 } from 'react-native';
 import { TextInput, Button, Card, List, IconButton, Chip, Searchbar, Menu, Divider } from 'react-native-paper';
-import { getStudents, saveStudents, getClasses, getCurrentClass, updateClassStudentCount, searchStudents } from '../utils/storage';
+import { useAuth } from '../contexts/AuthContext';
+import { getStudents, saveStudents, getClasses, getCurrentClass, updateClassStudentCount, searchStudents, DataService } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 const isSmallScreen = width < 375;
@@ -107,6 +108,8 @@ const SkeletonLoader = memo(() => (
 ));
 
 function StudentManager({ navigation }) {
+  const { getDisplayName } = useAuth();
+  
   const [students, setStudents] = useState([]);
   const [filteredStudents, setFilteredStudents] = useState([]);
   const [classes, setClasses] = useState([]);
@@ -121,11 +124,18 @@ function StudentManager({ navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
   const [sortBy, setSortBy] = useState('name');
+  const [saving, setSaving] = useState(false);
 
   // Callbacks memoizados
   const loadInitialData = useCallback(async () => {
-    await Promise.all([loadStudents(), loadClasses(), loadCurrentClass()]);
-    setIsLoading(false);
+    try {
+      await Promise.all([loadStudents(), loadClasses(), loadCurrentClass()]);
+    } catch (error) {
+      console.error('Erro ao carregar dados iniciais:', error);
+      Alert.alert('Erro', 'Não foi possível carregar os dados');
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   const loadStudents = useCallback(async () => {
@@ -134,6 +144,7 @@ function StudentManager({ navigation }) {
       setStudents(loadedStudents);
       setFilteredStudents(loadedStudents);
     } catch (error) {
+      console.error('Erro ao carregar alunos:', error);
       Alert.alert('Erro', 'Não foi possível carregar a lista de alunos');
     }
   }, []);
@@ -143,7 +154,7 @@ function StudentManager({ navigation }) {
       const loadedClasses = await getClasses();
       setClasses(loadedClasses);
     } catch (error) {
-      console.log('Nenhuma turma encontrada');
+      console.error('Erro ao carregar turmas:', error);
     }
   }, []);
 
@@ -154,6 +165,7 @@ function StudentManager({ navigation }) {
       setSelectedClass(currentClass || '');
       setFilterClass(currentClass || '');
     } catch (error) {
+      console.error('Erro ao carregar turma atual:', error);
       setCurrentClassId('');
       setSelectedClass('');
       setFilterClass('');
@@ -162,15 +174,24 @@ function StudentManager({ navigation }) {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadStudents(), loadClasses()]);
-    setRefreshing(false);
+    try {
+      await Promise.all([loadStudents(), loadClasses()]);
+    } catch (error) {
+      console.error('Erro ao atualizar:', error);
+    } finally {
+      setRefreshing(false);
+    }
   }, [loadStudents, loadClasses]);
 
   const handleSearch = useCallback(async (query) => {
     setSearchQuery(query);
-    const results = await searchStudents(query, filterClass);
-    const sortedResults = sortStudents(results, sortBy);
-    setFilteredStudents(sortedResults);
+    try {
+      const results = await searchStudents(query, filterClass);
+      const sortedResults = sortStudents(results, sortBy);
+      setFilteredStudents(sortedResults);
+    } catch (error) {
+      console.error('Erro na busca:', error);
+    }
   }, [filterClass, sortBy]);
 
   const sortStudents = useCallback((studentList, sortType) => {
@@ -274,36 +295,33 @@ function StudentManager({ navigation }) {
       return;
     }
 
-    const average = calculateAverage(currentNotes);
-    const selectedClassObj = classes.find(cls => cls.id === selectedClass);
-    
-    const newStudent = {
-      id: editingStudent ? editingStudent.id : Date.now().toString(),
-      name: studentName.trim(),
-      notes: currentNotes.map(note => parseFloat(note)),
-      average: parseFloat(average),
-      classId: selectedClass,
-      className: selectedClassObj ? selectedClassObj.name : 'Sem turma',
-      date: new Date().toLocaleDateString('pt-BR'),
-      lastModified: new Date().toISOString()
-    };
-
-    let updatedStudents;
-    if (editingStudent) {
-      updatedStudents = students.map(student =>
-        student.id === editingStudent.id ? newStudent : student
-      );
-    } else {
-      updatedStudents = [...students, newStudent];
-    }
+    setSaving(true);
 
     try {
-      setStudents(updatedStudents);
-      const saved = await saveStudents(updatedStudents);
+      const average = calculateAverage(currentNotes);
+      const selectedClassObj = classes.find(cls => cls.id === selectedClass);
       
-      if (saved) {
-        await updateClassStudentCount(selectedClass);
+      const studentData = {
+        name: studentName.trim(),
+        notes: currentNotes.map(note => parseFloat(note)),
+        average: parseFloat(average),
+        classId: selectedClass,
+        className: selectedClassObj ? selectedClassObj.name : 'Sem turma',
+        date: new Date().toLocaleDateString('pt-BR')
+      };
+
+      let result;
+      if (editingStudent) {
+        result = await DataService.updateStudent(editingStudent.id, studentData);
+      } else {
+        result = await DataService.saveStudent(studentData);
+      }
+
+      if (result.success) {
+        // Recarregar a lista de alunos
+        await loadStudents();
         
+        // Limpar formulário
         setStudentName('');
         setCurrentNotes(['']);
         setEditingStudent(null);
@@ -312,17 +330,16 @@ function StudentManager({ navigation }) {
           '✅ Sucesso',
           editingStudent ? 'Aluno atualizado com sucesso!' : 'Aluno adicionado com sucesso!'
         );
-        
-        await loadStudents();
       } else {
-        Alert.alert('❌ Erro', 'Não foi possível salvar os dados do aluno');
-        loadStudents();
+        Alert.alert('❌ Erro', result.error || 'Não foi possível salvar o aluno');
       }
     } catch (error) {
+      console.error('Erro ao salvar aluno:', error);
       Alert.alert('❌ Erro', 'Ocorreu um erro ao salvar o aluno');
-      loadStudents();
+    } finally {
+      setSaving(false);
     }
-  }, [studentName, selectedClass, currentNotes, editingStudent, students, classes, validateNotes, calculateAverage, loadStudents]);
+  }, [studentName, selectedClass, currentNotes, editingStudent, classes, validateNotes, calculateAverage, loadStudents]);
 
   const editStudent = useCallback((student) => {
     setStudentName(student.name);
@@ -345,30 +362,23 @@ function StudentManager({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              const updatedStudents = students.filter(student => 
-                student.id !== studentToDelete.id
-              );
-
-              setStudents(updatedStudents);
-              const saved = await saveStudents(updatedStudents);
+              const result = await DataService.deleteStudent(studentToDelete.id);
               
-              if (saved) {
-                await updateClassStudentCount(studentToDelete.classId);
+              if (result.success) {
                 await loadStudents();
                 Alert.alert('✅ Sucesso', `Aluno "${studentToDelete.name}" excluído com sucesso!`);
               } else {
-                Alert.alert('❌ Erro', 'Não foi possível salvar as alterações');
-                loadStudents();
+                Alert.alert('❌ Erro', result.error || 'Não foi possível excluir o aluno');
               }
             } catch (error) {
+              console.error('Erro ao excluir aluno:', error);
               Alert.alert('❌ Erro', 'Ocorreu um erro ao excluir o aluno');
-              loadStudents();
             }
           },
         },
       ]
     );
-  }, [students, loadStudents]);
+  }, [loadStudents]);
 
   // Efeitos otimizados
   useEffect(() => {
@@ -648,8 +658,8 @@ function StudentManager({ navigation }) {
               mode="contained" 
               onPress={saveStudent}
               style={styles.saveButton}
-              disabled={!studentName.trim() || !selectedClass}
-              loading={false}
+              disabled={!studentName.trim() || !selectedClass || saving}
+              loading={saving}
               contentStyle={styles.buttonContent}
             >
               {editingStudent ? '💾 Atualizar Aluno' : '✅ Salvar Aluno'}
@@ -666,6 +676,7 @@ function StudentManager({ navigation }) {
                 }}
                 style={styles.cancelButton}
                 contentStyle={styles.buttonContent}
+                disabled={saving}
               >
                 ❌ Cancelar Edição
               </Button>

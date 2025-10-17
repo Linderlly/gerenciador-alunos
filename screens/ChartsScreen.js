@@ -4,7 +4,8 @@ import {
   StyleSheet,
   ScrollView,
   Dimensions,
-  Text as RNText
+  Text as RNText,
+  RefreshControl
 } from 'react-native';
 import {
   Card,
@@ -20,11 +21,14 @@ import {
   getStudentPerformanceData, 
   getClassComparisonData, 
   getPerformanceDistribution,
-  getClassStatistics
+  getClassStatistics,
+  StorageService
 } from '../utils/storage';
+import { useAuth } from '../contexts/AuthContext';
 import { PieChart, BarChart, LineChart } from 'react-native-chart-kit';
 
 const { width } = Dimensions.get('window');
+const isSmallScreen = width < 375;
 
 // Componente customizado para o status do aluno
 const StatusBadge = memo(({ status, average }) => {
@@ -258,6 +262,8 @@ const StatisticsSummary = memo(({ statistics, selectedClass }) => {
 });
 
 function ChartsScreen({ navigation }) {
+  const { getDisplayName } = useAuth();
+  
   const [students, setStudents] = useState([]);
   const [classes, setClasses] = useState([]);
   const [currentClassId, setCurrentClassId] = useState('');
@@ -274,9 +280,15 @@ function ChartsScreen({ navigation }) {
     failed: 0,
     approvalRate: 0
   });
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
+  /**
+   * Carregar dados iniciais
+   */
   const loadData = useCallback(async () => {
     try {
+      setIsLoading(true);
       const [loadedStudents, loadedClasses, currentClass] = await Promise.all([
         getStudents(),
         getClasses(),
@@ -288,35 +300,61 @@ function ChartsScreen({ navigation }) {
       setCurrentClassId(currentClass || '');
       setSelectedClassId(currentClass || 'all');
     } catch (error) {
-      console.log('Erro ao carregar dados:', error);
+      console.error('Erro ao carregar dados para gráficos:', error);
+    } finally {
+      setIsLoading(false);
     }
   }, []);
 
+  /**
+   * Atualizar gráficos com base na turma selecionada
+   */
   const updateCharts = useCallback(async () => {
-    const classId = selectedClassId === 'all' ? null : selectedClassId;
-    
-    const [
-      performance,
-      classComparison,
-      distribution,
-      stats
-    ] = await Promise.all([
-      getStudentPerformanceData(classId),
-      getClassComparisonData(),
-      getPerformanceDistribution(classId),
-      getClassStatistics(classId)
-    ]);
+    try {
+      const classId = selectedClassId === 'all' ? null : selectedClassId;
+      
+      const [
+        performance,
+        classComparison,
+        distribution,
+        stats
+      ] = await Promise.all([
+        getStudentPerformanceData(classId),
+        getClassComparisonData(),
+        getPerformanceDistribution(classId),
+        getClassStatistics(classId)
+      ]);
 
-    setPerformanceData(performance);
-    setClassComparisonData(classComparison);
-    setPerformanceDistribution(distribution);
-    setStatistics(stats);
+      setPerformanceData(performance);
+      setClassComparisonData(classComparison);
+      setPerformanceDistribution(distribution);
+      setStatistics(stats);
+    } catch (error) {
+      console.error('Erro ao atualizar gráficos:', error);
+    }
   }, [selectedClassId]);
 
+  /**
+   * Atualizar dados via pull-to-refresh
+   */
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await StorageService.syncAllData();
+      await loadData();
+    } catch (error) {
+      console.error('Erro ao atualizar dados:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadData]);
+
+  // Carregar dados iniciais
   useEffect(() => {
     loadData();
   }, [loadData]);
 
+  // Recarregar quando a tela receber foco
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
       loadData();
@@ -325,6 +363,7 @@ function ChartsScreen({ navigation }) {
     return unsubscribe;
   }, [navigation, loadData]);
 
+  // Atualizar gráficos quando alunos ou turma selecionada mudar
   useEffect(() => {
     if (students.length > 0) {
       updateCharts();
@@ -335,6 +374,9 @@ function ChartsScreen({ navigation }) {
     ? null 
     : classes.find(cls => cls.id === selectedClassId);
 
+  /**
+   * Renderizar gráfico baseado no tipo selecionado
+   */
   const renderChart = () => {
     switch (chartType) {
       case 'distribution':
@@ -356,12 +398,23 @@ function ChartsScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <ScrollView>
+      <ScrollView
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#1976d2']}
+            tintColor="#1976d2"
+          />
+        }
+      >
+        {/* Estatísticas Resumidas */}
         <StatisticsSummary 
           statistics={statistics} 
           selectedClass={selectedClass}
         />
 
+        {/* Controles de Filtro e Visualização */}
         <Card style={styles.controlsCard}>
           <Card.Content>
             <Text style={styles.controlsTitle}>
@@ -425,7 +478,8 @@ function ChartsScreen({ navigation }) {
           </Card.Content>
         </Card>
 
-        {students.length === 0 ? (
+        {/* Estado Vazio */}
+        {students.length === 0 && !isLoading && (
           <Card style={styles.emptyCard}>
             <Card.Content style={styles.emptyContent}>
               <Text style={styles.emptyIcon}>📊</Text>
@@ -437,10 +491,21 @@ function ChartsScreen({ navigation }) {
               </Text>
             </Card.Content>
           </Card>
-        ) : (
-          renderChart()
         )}
 
+        {/* Loading */}
+        {isLoading && (
+          <Card style={styles.loadingCard}>
+            <Card.Content style={styles.loadingContent}>
+              <Text style={styles.loadingText}>Carregando gráficos...</Text>
+            </Card.Content>
+          </Card>
+        )}
+
+        {/* Gráficos */}
+        {!isLoading && students.length > 0 && renderChart()}
+
+        {/* Informações Adicionais */}
         {performanceData.length > 0 && chartType === 'performance' && (
           <Card style={styles.infoCard}>
             <Card.Content>
@@ -460,7 +525,7 @@ function ChartsScreen({ navigation }) {
   );
 }
 
-// Funções auxiliares
+// Funções auxiliares para cores
 const getRangeColor = (range) => {
   switch (range) {
     case '0-4.9': return '#f44336';
@@ -517,17 +582,19 @@ const lineChartConfig = {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 10,
+    padding: isSmallScreen ? 8 : 10,
     backgroundColor: '#f6f6f6',
   },
   summaryCard: {
-    marginBottom: 20,
+    marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
   },
   summaryTitle: {
-    fontSize: 20,
+    fontSize: isSmallScreen ? 18 : 20,
     fontWeight: 'bold',
-    marginBottom: 15,
+    marginBottom: isSmallScreen ? 12 : 15,
     color: '#000000',
     textAlign: 'center',
   },
@@ -535,17 +602,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: isSmallScreen ? 8 : 10,
   },
   statItem: {
     alignItems: 'center',
     width: '30%',
-    marginBottom: 10,
+    marginBottom: isSmallScreen ? 8 : 10,
   },
   statNumber: {
-    fontSize: 24,
+    fontSize: isSmallScreen ? 20 : 24,
     fontWeight: 'bold',
     color: '#2196f3',
+    marginBottom: 4,
   },
   statApproved: {
     color: '#4caf50',
@@ -560,118 +628,122 @@ const styles = StyleSheet.create({
     color: '#2196f3',
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: isSmallScreen ? 10 : 12,
     color: '#666',
     textAlign: 'center',
-    marginTop: 4,
+    lineHeight: isSmallScreen ? 12 : 14,
   },
   controlsCard: {
-    marginBottom: 20,
+    marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
   },
   controlsTitle: {
-    fontSize: 18,
+    fontSize: isSmallScreen ? 18 : 20,
     fontWeight: 'bold',
-    marginBottom: 15,
+    marginBottom: isSmallScreen ? 12 : 15,
     color: '#000000',
   },
   filterLabel: {
-    fontSize: 16,
+    fontSize: isSmallScreen ? 14 : 16,
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: isSmallScreen ? 6 : 8,
     color: '#000000',
   },
   classFilter: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-    paddingVertical: 4,
+    gap: isSmallScreen ? 6 : 8,
+    marginBottom: isSmallScreen ? 10 : 12,
+    paddingVertical: isSmallScreen ? 4 : 5,
   },
   filterChip: {
-    marginRight: 8,
+    marginRight: isSmallScreen ? 6 : 8,
   },
   selectedFilterChip: {
     backgroundColor: '#2196f3',
   },
   segmentedButtons: {
-    marginBottom: 8,
+    marginBottom: isSmallScreen ? 8 : 10,
   },
   chartCard: {
-    marginBottom: 20,
+    marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
   },
   chartTitle: {
-    fontSize: 18,
+    fontSize: isSmallScreen ? 18 : 20,
     fontWeight: 'bold',
-    marginBottom: 15,
+    marginBottom: isSmallScreen ? 12 : 15,
     color: '#000000',
     textAlign: 'center',
   },
   legendContainer: {
-    marginTop: 10,
-    gap: 8,
+    marginTop: isSmallScreen ? 10 : 12,
+    gap: isSmallScreen ? 6 : 8,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: isSmallScreen ? 6 : 8,
   },
   legendColor: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: isSmallScreen ? 12 : 16,
+    height: isSmallScreen ? 12 : 16,
+    borderRadius: isSmallScreen ? 6 : 8,
   },
   legendText: {
-    fontSize: 14,
+    fontSize: isSmallScreen ? 12 : 14,
     color: '#666',
   },
   statsGrid: {
-    marginTop: 15,
-    gap: 10,
+    marginTop: isSmallScreen ? 12 : 15,
+    gap: isSmallScreen ? 8 : 10,
   },
   classStat: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: isSmallScreen ? 6 : 8,
   },
   className: {
     flex: 2,
-    fontSize: 14,
+    fontSize: isSmallScreen ? 12 : 14,
     color: '#000000',
   },
   classAverage: {
     flex: 1,
-    fontSize: 16,
+    fontSize: isSmallScreen ? 14 : 16,
     fontWeight: 'bold',
     color: '#2196f3',
     textAlign: 'center',
   },
   classProgress: {
     flex: 3,
-    height: 8,
+    height: isSmallScreen ? 6 : 8,
   },
   lineChart: {
-    marginVertical: 8,
+    marginVertical: isSmallScreen ? 6 : 8,
     borderRadius: 16,
   },
   studentList: {
-    marginTop: 15,
-    gap: 12,
+    marginTop: isSmallScreen ? 12 : 15,
+    gap: isSmallScreen ? 8 : 10,
   },
   studentItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    padding: 12,
+    gap: isSmallScreen ? 8 : 12,
+    padding: isSmallScreen ? 10 : 12,
     backgroundColor: '#f8f9fa',
     borderRadius: 8,
-    minHeight: 70,
+    minHeight: isSmallScreen ? 60 : 70,
   },
   studentRank: {
-    fontSize: 16,
+    fontSize: isSmallScreen ? 14 : 16,
     fontWeight: 'bold',
     color: '#666',
-    width: 35,
+    width: isSmallScreen ? 30 : 35,
     textAlign: 'center',
   },
   studentMainInfo: {
@@ -682,72 +754,91 @@ const styles = StyleSheet.create({
   },
   studentNameContainer: {
     flex: 1,
-    marginRight: 12,
+    marginRight: isSmallScreen ? 8 : 12,
   },
   studentName: {
-    fontSize: 16,
+    fontSize: isSmallScreen ? 14 : 16,
     fontWeight: '600',
     color: '#000000',
-    marginBottom: 4,
+    marginBottom: isSmallScreen ? 2 : 4,
   },
   studentAverage: {
-    fontSize: 14,
+    fontSize: isSmallScreen ? 12 : 14,
     fontWeight: '500',
   },
   // Estilos do Status Badge customizado
   statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: isSmallScreen ? 8 : 12,
+    paddingVertical: isSmallScreen ? 4 : 6,
     borderRadius: 16,
     borderWidth: 1,
-    minWidth: 90,
+    minWidth: isSmallScreen ? 80 : 90,
     alignItems: 'center',
     justifyContent: 'center',
   },
   statusText: {
-    fontSize: 12,
+    fontSize: isSmallScreen ? 10 : 12,
     fontWeight: '600',
     textAlign: 'center',
   },
   emptyCard: {
-    marginBottom: 20,
+    marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
     alignItems: 'center',
   },
   emptyContent: {
     alignItems: 'center',
-    paddingVertical: 40,
+    paddingVertical: isSmallScreen ? 30 : 40,
   },
   emptyIcon: {
-    fontSize: 48,
-    marginBottom: 16,
+    fontSize: isSmallScreen ? 48 : 56,
+    marginBottom: isSmallScreen ? 12 : 16,
   },
   emptyTitle: {
-    fontSize: 18,
+    fontSize: isSmallScreen ? 16 : 18,
     fontWeight: 'bold',
-    marginBottom: 8,
+    marginBottom: isSmallScreen ? 6 : 8,
     color: '#666',
+    textAlign: 'center',
   },
   emptyText: {
-    fontSize: 14,
+    fontSize: isSmallScreen ? 14 : 16,
     textAlign: 'center',
     color: '#999',
-    lineHeight: 20,
+    lineHeight: isSmallScreen ? 18 : 20,
+  },
+  loadingCard: {
+    marginBottom: isSmallScreen ? 12 : 16,
+    backgroundColor: '#ffffff',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
+  },
+  loadingContent: {
+    alignItems: 'center',
+    paddingVertical: isSmallScreen ? 20 : 25,
+  },
+  loadingText: {
+    fontSize: isSmallScreen ? 14 : 16,
+    color: '#666',
   },
   infoCard: {
-    marginBottom: 20,
+    marginBottom: isSmallScreen ? 12 : 16,
     backgroundColor: '#e3f2fd',
+    borderRadius: isSmallScreen ? 10 : 12,
+    elevation: 2,
   },
   infoTitle: {
-    fontSize: 16,
+    fontSize: isSmallScreen ? 16 : 18,
     fontWeight: 'bold',
-    marginBottom: 8,
+    marginBottom: isSmallScreen ? 8 : 10,
     color: '#1976d2',
   },
   infoText: {
-    fontSize: 14,
+    fontSize: isSmallScreen ? 14 : 16,
     color: '#1976d2',
-    lineHeight: 20,
+    lineHeight: isSmallScreen ? 18 : 20,
   },
 });
 
